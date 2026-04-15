@@ -1,0 +1,19 @@
+services:
+  invoice-web:
+    build:
+      context: .
+    image: auto-invoice-web:latest
+    container_name: auto-invoice-web
+    restart: unless-stopped
+    ports:
+      - "${INVOICE_HOST_PORT:-8000}:8000"
+    environment:
+      INVOICE_MAX_FILE_SIZE: "${INVOICE_MAX_FILE_SIZE:-20971520}"
+      INVOICE_MAX_UPLOAD_SIZE: "${INVOICE_MAX_UPLOAD_SIZE:-209715200}"
+      INVOICE_TASK_RETENTION_SECONDS: "${INVOICE_TASK_RETENTION_SECONDS:-86400}"
+      INVOICE_LOG_LEVEL: "${INVOICE_LOG_LEVEL:-INFO}"
+    volumes:
+      - invoice-work:/app/work
+
+volumes:
+  invoice-work:

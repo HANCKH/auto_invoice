@@ -788,6 +788,37 @@ def write_summary_excel(output_root: Path, rows: list[dict], summary_name: str =
     return str(out)
 
 
+def process_invoice_batch(
+    input_dir: str,
+    template: str = "模板文件.xlsx",
+    output_dir: str = "输出结果",
+    rename: bool = True,
+    recursive: bool = False,
+    summary_name: str = "A物品清单.xlsx",
+    no_summary: bool = False,
+) -> list[dict]:
+    """Public batch API used by CLI and web service."""
+    pdf_root = Path(input_dir)
+    template_path = Path(template)
+
+    if not pdf_root.is_dir():
+        raise ValueError(f"Input directory not found: {input_dir}")
+    if not template_path.exists():
+        raise FileNotFoundError(f"Template not found: {template}")
+
+    Path(output_dir).mkdir(parents=True, exist_ok=True)
+    args = argparse.Namespace(
+        input_dir=str(pdf_root),
+        template=str(template_path),
+        output_dir=str(output_dir),
+        rename=rename,
+        recursive=recursive,
+        summary_name=summary_name,
+        no_summary=no_summary,
+    )
+    return _batch_process(args)
+
+
 def _batch_process(args: argparse.Namespace) -> list[dict]:
     pdf_root = Path(args.input_dir)
     pdf_files = sorted(pdf_root.rglob("*.pdf")) if args.recursive else sorted(pdf_root.glob("*.pdf"))
@@ -914,7 +945,15 @@ def main() -> None:
         _single_process(args)
         return
 
-    _batch_process(args)
+    process_invoice_batch(
+        input_dir=args.input_dir,
+        template=args.template,
+        output_dir=args.output_dir,
+        rename=args.rename,
+        recursive=args.recursive,
+        summary_name=args.summary_name,
+        no_summary=args.no_summary,
+    )
 
 
 if __name__ == "__main__":

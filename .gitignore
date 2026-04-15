@@ -3,3 +3,14 @@
 !README.md
 !模板文件.xlsx
 !invoice_to_excel.py
+!Dockerfile
+!docker-compose.yml
+!.dockerignore
+!requirements.txt
+!web_app.py
+!templates/
+!templates/**
+!static/
+!static/**
+!deployment_flow/
+!deployment_flow/**

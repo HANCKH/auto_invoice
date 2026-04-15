@@ -1,0 +1,205 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>发票整理</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <main class="shell">
+    <section class="panel">
+      <div class="heading">
+        <p class="eyebrow">Auto Invoice</p>
+        <h1>发票整理</h1>
+      </div>
+
+      <div class="stats-grid" aria-label="使用统计">
+        <div class="stat-card">
+          <strong id="usageCount">--</strong>
+          <span>累计使用人次</span>
+        </div>
+        <div class="stat-card">
+          <strong id="invoiceCount">--</strong>
+          <span>累计处理发票</span>
+        </div>
+      </div>
+
+      <form id="uploadForm" class="uploader">
+        <label id="dropZone" class="drop-zone" for="fileInput">
+          <input id="fileInput" name="files" type="file" accept="application/pdf,.pdf" multiple>
+          <span class="upload-icon" aria-hidden="true">PDF</span>
+          <span id="fileSummary" class="file-summary">选择 PDF</span>
+        </label>
+
+        <div id="fileList" class="file-list" aria-live="polite"></div>
+
+        <div class="actions">
+          <button id="submitButton" type="submit">开始处理</button>
+          <a id="downloadButton" class="download-button hidden" href="#">下载整理结果</a>
+        </div>
+      </form>
+
+      <div id="statusBox" class="status idle" role="status" aria-live="polite">
+        等待上传
+      </div>
+    </section>
+  </main>
+
+  <script>
+    const form = document.getElementById("uploadForm");
+    const input = document.getElementById("fileInput");
+    const dropZone = document.getElementById("dropZone");
+    const fileSummary = document.getElementById("fileSummary");
+    const fileList = document.getElementById("fileList");
+    const statusBox = document.getElementById("statusBox");
+    const submitButton = document.getElementById("submitButton");
+    const downloadButton = document.getElementById("downloadButton");
+    const usageCount = document.getElementById("usageCount");
+    const invoiceCount = document.getElementById("invoiceCount");
+
+    let pollingTimer = null;
+
+    function formatCount(value) {
+      return Number(value || 0).toLocaleString("zh-CN");
+    }
+
+    async function loadStats() {
+      try {
+        const response = await fetch("/api/stats", { cache: "no-store" });
+        if (!response.ok) {
+          return;
+        }
+        const data = await response.json();
+        usageCount.textContent = formatCount(data.usage_count);
+        invoiceCount.textContent = formatCount(data.processed_invoice_count);
+      } catch (error) {
+        usageCount.textContent = "--";
+        invoiceCount.textContent = "--";
+      }
+    }
+
+    function setStatus(text, state = "idle") {
+      statusBox.textContent = text;
+      statusBox.className = `status ${state}`;
+    }
+
+    function resetDownload() {
+      downloadButton.classList.add("hidden");
+      downloadButton.removeAttribute("href");
+    }
+
+    function renderFiles() {
+      const files = Array.from(input.files || []);
+      resetDownload();
+      if (files.length === 0) {
+        fileSummary.textContent = "选择 PDF";
+        fileList.innerHTML = "";
+        setStatus("等待上传", "idle");
+        return;
+      }
+
+      fileSummary.textContent = `${files.length} 个 PDF`;
+      fileList.replaceChildren();
+      files.forEach((file) => {
+        const item = document.createElement("span");
+        item.title = file.name;
+        item.textContent = file.name;
+        fileList.appendChild(item);
+      });
+      setStatus("准备上传", "idle");
+    }
+
+    async function pollStatus(taskId) {
+      const response = await fetch(`/api/tasks/${taskId}/status`);
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}));
+        throw new Error(data.detail || "状态查询失败");
+      }
+
+      const data = await response.json();
+      if (data.status === "SUCCESS") {
+        setStatus(data.message || "处理完成", "success");
+        downloadButton.href = data.download_url;
+        downloadButton.classList.remove("hidden");
+        submitButton.disabled = false;
+        loadStats();
+        return;
+      }
+
+      if (data.status === "FAILED") {
+        setStatus(data.message || "处理失败", "error");
+        submitButton.disabled = false;
+        return;
+      }
+
+      setStatus(data.message || "正在处理发票", "running");
+      pollingTimer = window.setTimeout(() => pollStatus(taskId).catch(handleError), 1500);
+    }
+
+    function handleError(error) {
+      setStatus(error.message || "请求失败", "error");
+      submitButton.disabled = false;
+      if (pollingTimer) {
+        window.clearTimeout(pollingTimer);
+        pollingTimer = null;
+      }
+    }
+
+    input.addEventListener("change", renderFiles);
+
+    dropZone.addEventListener("dragover", (event) => {
+      event.preventDefault();
+      dropZone.classList.add("dragging");
+    });
+
+    dropZone.addEventListener("dragleave", () => {
+      dropZone.classList.remove("dragging");
+    });
+
+    dropZone.addEventListener("drop", (event) => {
+      event.preventDefault();
+      dropZone.classList.remove("dragging");
+      input.files = event.dataTransfer.files;
+      renderFiles();
+    });
+
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      resetDownload();
+
+      const files = Array.from(input.files || []);
+      if (files.length === 0) {
+        setStatus("请选择至少一个 PDF 文件", "error");
+        return;
+      }
+
+      const formData = new FormData();
+      files.forEach((file) => formData.append("files", file));
+
+      submitButton.disabled = true;
+      setStatus("正在上传", "running");
+
+      try {
+        const response = await fetch("/api/tasks/upload", {
+          method: "POST",
+          body: formData,
+        });
+
+        if (!response.ok) {
+          const data = await response.json().catch(() => ({}));
+          throw new Error(data.detail || "上传失败");
+        }
+
+        const data = await response.json();
+        setStatus("任务已创建", "running");
+        await pollStatus(data.task_id);
+      } catch (error) {
+        handleError(error);
+      }
+    });
+
+    loadStats();
+  </script>
+</body>
+</html>

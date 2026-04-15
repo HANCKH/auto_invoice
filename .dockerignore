@@ -1,0 +1,15 @@
+.git
+.gitignore
+.dockerignore
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+env/
+work/
+输出结果/
+*.zip
+*.log

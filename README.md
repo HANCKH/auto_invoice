@@ -38,6 +38,68 @@ python invoice_to_excel.py \
 - `--rename`：输出重命名后的 PDF
 - `--recursive`：递归扫描子目录中的 PDF
 
+## 网页使用方式
+
+安装依赖：
+
+```bash
+pip install -r requirements.txt
+```
+
+启动服务：
+
+```bash
+uvicorn web_app:app --host 0.0.0.0 --port 8000
+```
+
+浏览器打开：
+
+```text
+http://localhost:8000
+```
+
+网页模式当前只支持批量上传 PDF，不支持 ZIP。处理完成后会下载 `发票整理结果.zip`，压缩包内保留按公司归档的文件夹、公司汇总 Excel、对应 PDF 和总表 `A物品清单.xlsx`。
+
+网页首页会展示累计使用人次和累计处理发票数量，统计数据保存在 `work/stats.json`。
+
+## Docker 使用方式
+
+构建并启动：
+
+```bash
+docker compose up --build -d
+```
+
+查看服务状态：
+
+```bash
+docker compose ps
+```
+
+查看日志：
+
+```bash
+docker compose logs -f invoice-web
+```
+
+浏览器打开：
+
+```text
+http://localhost:8000
+```
+
+如需换端口，例如宿主机使用 `8080`：
+
+```bash
+INVOICE_HOST_PORT=8080 docker compose up --build -d
+```
+
+上传任务和结果保存在 Docker volume `invoice-work` 中。停止服务：
+
+```bash
+docker compose down
+```
+
 ## 输出结果说明
 
 在 `<输出目录>` 下会生成：
@@ -50,5 +112,5 @@ python invoice_to_excel.py \
 ## 依赖
 
 ```bash
-pip install pdfplumber openpyxl pypinyin
+pip install -r requirements.txt
 ```
