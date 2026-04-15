@@ -8,13 +8,12 @@
 </head>
 <body>
   <main class="shell">
-    <section class="panel">
-      <div class="heading">
-        <p class="eyebrow">Auto Invoice</p>
-        <h1>发票整理</h1>
+    <section class="stats-panel" aria-labelledby="statsTitle">
+      <div class="stats-heading">
+        <p class="stats-kicker">Usage</p>
+        <h2 id="statsTitle">使用统计</h2>
       </div>
-
-      <div class="stats-grid" aria-label="使用统计">
+      <div class="stats-cards">
         <div class="stat-card">
           <strong id="usageCount">--</strong>
           <span>累计使用人次</span>
@@ -23,6 +22,13 @@
           <strong id="invoiceCount">--</strong>
           <span>累计处理发票</span>
         </div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="heading">
+        <p class="eyebrow">Auto Invoice</p>
+        <h1>发票整理</h1>
       </div>
 
       <form id="uploadForm" class="uploader">
