@@ -62,10 +62,10 @@ def _to_int(value: Optional[str]) -> int:
 
 def _normalize_unit(value: Optional[str]) -> str:
     unit = (value or "").strip()
+    allowed_units = {"个", "片", "件", "盒", "瓶", "米", "套", "袋", "台", "只", "块", "箱", "批"}
     if not unit:
         return "个"
-    # If unit is English-like token, normalize to Chinese default unit.
-    if re.search(r"[A-Za-z]", unit):
+    if unit not in allowed_units:
         return "个"
     return unit
 
@@ -193,7 +193,7 @@ def _extract_invoice_items(text: str) -> list[Dict[str, Optional[str]]]:
     """Extract all invoice item lines (one row per '*...' line)."""
     items: list[Dict[str, Optional[str]]] = []
     lines = [ln.strip() for ln in _clean_text(text).splitlines() if ln.strip()]
-    units = r"(个|片|件|盒|瓶|米|套|袋|台|只|块|箱|批|pcs|PCS|Pc|PC|Pcs)"
+    units = r"(个|片|件|盒|瓶|米|套|袋|台|只|块|箱|批|卷|把|pcs|PCS|Pc|PC|Pcs)"
 
     # Typical item tail:
     # "<unit> <qty> <unit_price> <amount> <tax_rate> <tax>"
@@ -281,18 +281,183 @@ def _extract_invoice_items(text: str) -> list[Dict[str, Optional[str]]]:
         - 项目名称(product_line)
         - 规格型号(specification)
         """
-        suffix = _clean_suffix_text(suffix_text)
-        merged = re.sub(r"\s+", " ", f"{left_text} {suffix}".strip())
+        def _clean_text_piece(text: str) -> str:
+            text = re.sub(r"\d+\.\d{4,}", "", text or "")
+            return re.sub(r"\s+", " ", text).strip()
+
+        def _join_tokens(tokens: list[str]) -> str:
+            return "".join(tk for tk in tokens if tk)
+
+        def _normalize_spec(spec: str) -> str:
+            spec = re.sub(r"\s+", " ", spec or "").strip()
+            if re.fullmatch(r"(个|片|件|盒|瓶|米|套|袋|台|只|块|箱|批|卷|把)\s+\d+(?:\.\d+)?", spec):
+                return ""
+            spec = re.sub(
+                r"\s+(?:个|片|件|盒|瓶|米|套|袋|台|只|块|箱|批|卷|把)\s+\d+(?:\.\d+)?\s+\d+(?:\.\d+)?\s*$",
+                "",
+                spec,
+            )
+            return spec.strip()
+
+        def _is_short_spec_token(token: str) -> bool:
+            tk = token.strip()
+            if not tk or len(tk) > 24:
+                return False
+            if re.fullmatch(r"-?\d+(?:\.\d+)?", tk):
+                return False
+            if re.search(r"[\u4e00-\u9fa5]", tk) and len(tk) > 6:
+                return False
+            return bool(re.search(r"\d", tk))
+
+        def _looks_like_spec_start(token: str) -> bool:
+            tk = token.strip()
+            if not tk:
+                return False
+            if re.search(r"\d", tk):
+                return True
+            if any(ch in tk for ch in ("（", "(", "-", "/", "*")):
+                return True
+            return False
+
+        def _looks_like_complete_product_name(text: str) -> bool:
+            text = (text or "").strip()
+            if not text:
+                return False
+            if len(text) < 4:
+                return False
+            tail = text.split("*")[-1].strip()
+            if tail and re.fullmatch(r"[\u4e00-\u9fa5]+", tail) and len(tail) <= 3:
+                return False
+            if re.search(r"[A-Za-z].*\d|\d.*[A-Za-z]", text):
+                return False
+            return True
+
+        def _looks_like_spec_fragment(text: str) -> bool:
+            text = (text or "").strip()
+            if not text:
+                return False
+            if re.search(r"[A-Za-z].*\d|\d.*[A-Za-z]", text):
+                return True
+            if any(x in text for x in ("（", "）", "(", ")", "-", "/", "*", "度", "接口", "模块", "适用", "升级")):
+                return True
+            if len(text) <= 8:
+                return True
+            return False
+
+        def _score_candidate(name: str, spec: str, has_suffix: bool) -> int:
+            score = 0
+            name = (name or "").strip()
+            spec = _normalize_spec(spec)
+
+            if not name:
+                return -10_000
+
+            if re.search(r"\d+\.\d{4,}", name):
+                score -= 80
+            if re.search(r"\d+\.\d{4,}", spec):
+                score -= 80
+
+            if len(name) <= 4:
+                score -= 40
+            elif len(name) >= 8:
+                score += 20
+
+            if has_suffix and len(name) >= len((left_text or "").strip()):
+                score += 25
+
+            if spec in ("", "无"):
+                if has_suffix:
+                    score += 5
+                else:
+                    score -= 5
+                if has_suffix and len(name) >= len(left_clean):
+                    score += 55
+            else:
+                if len(spec) <= 24:
+                    score += 15
+                if len(spec) > 48:
+                    score -= 20
+                if _looks_like_spec_start(spec):
+                    score += 20
+                if not re.search(r"\d", spec) and len(spec) > 12:
+                    score -= 12
+                if re.search(r"[\u4e00-\u9fa5]", spec) and len(spec) > 8 and not re.search(r"[A-Za-z].*\d|\d.*[A-Za-z]", spec):
+                    score -= 18
+                if has_suffix and re.search(r"\d", spec) and any(ch in spec for ch in ("（", ")", "）", "-")):
+                    score += 20
+
+            if re.search(r"(?:个|片|件|盒|瓶|米|套|袋|台|只|块|箱|批|卷|把)\s+\d+(?:\.\d+)?", spec):
+                score -= 50
+
+            if any(k in name for k in ("打印机配件", "模块", "摄像头", "屏幕", "电源", "核心板", "底板", "风扇", "热端")):
+                score += 12
+
+            return score
+
+        suffix = _clean_text_piece(_clean_suffix_text(suffix_text))
+        left_clean = _clean_text_piece(left_text)
+        merged = _clean_text_piece(f"{left_clean} {suffix}".strip())
         if not merged:
             return "", ""
 
+        left_parts = left_clean.split()
         parts = merged.split()
+        candidates: list[tuple[str, str]] = []
+
         if len(parts) == 1:
             return parts[0], ""
 
-        product_line = parts[0]
-        specification = " ".join(parts[1:]).strip()
-        return product_line, specification
+        if (
+            suffix
+            and len(left_parts) >= 2
+            and any(ch in left_parts[1] for ch in ("（", "("))
+            and not any(ch in left_parts[1] for ch in ("）", ")"))
+        ):
+            return left_parts[0], _normalize_spec(_join_tokens(left_parts[1:]) + suffix)
+
+        if (
+            suffix
+            and len(left_parts) == 2
+            and _looks_like_complete_product_name(left_parts[0])
+            and _looks_like_spec_start(left_parts[1])
+            and _looks_like_spec_fragment(suffix)
+        ):
+            return left_parts[0], _normalize_spec(_join_tokens(left_parts[1:]) + suffix)
+
+        # Strategy 1: fallback split, first token is name, the rest is spec.
+        candidates.append((parts[0], " ".join(parts[1:])))
+
+        if suffix and len(left_parts) == 1:
+            # Wrapped continuation belongs to the product name.
+            candidates.append((left_parts[0] + suffix, ""))
+
+        if suffix and len(left_parts) >= 2 and _looks_like_spec_start(left_parts[1]):
+            # The spec starts on the first line and continues in wrapped lines.
+            candidates.append((left_parts[0], _join_tokens(left_parts[1:]) + suffix))
+            if _looks_like_complete_product_name(left_parts[0]) and _looks_like_spec_fragment(suffix):
+                candidates.append((left_parts[0], _join_tokens(left_parts[1:]) + suffix))
+            if _looks_like_complete_product_name(left_parts[0]) and not _looks_like_spec_fragment(suffix):
+                candidates.append((_join_tokens([left_parts[0], suffix]), _join_tokens(left_parts[1:])))
+
+        if suffix and len(left_parts) >= 2:
+            spec_idx = None
+            for i, tk in enumerate(left_parts[1:], start=1):
+                if _is_short_spec_token(tk):
+                    spec_idx = i
+                    break
+            if spec_idx is not None:
+                product_tokens = left_parts[:spec_idx] + left_parts[spec_idx + 1 :]
+                candidates.append((_join_tokens(product_tokens) + suffix, left_parts[spec_idx]))
+
+            if len(left_parts) == 2 and len(left_parts[1]) <= 12:
+                # E.g. "3D打印 干燥盒" + "机配件"
+                candidates.append((left_parts[0] + suffix, left_parts[1]))
+
+        best_name, best_spec = max(
+            candidates,
+            key=lambda pair: _score_candidate(pair[0], pair[1], bool(suffix)),
+        )
+        return best_name.strip(), _normalize_spec(best_spec)
 
     def _parse_item_text(raw_item: str, is_multiline: bool, suffix_text: str = "") -> None:
         line = re.sub(r"\s+", " ", raw_item).strip()
@@ -383,6 +548,12 @@ def _extract_invoice_items(text: str) -> list[Dict[str, Optional[str]]]:
             suffix_text=suffix_text if is_multiline else "",
         )
 
+        # Fallback cleanup: if spec is just "<unit> <qty>", it is not a real spec.
+        if specification and re.fullmatch(r"(个|片|件|盒|瓶|米|套|袋|台|只|块|箱|批|卷|把)\s+\d+(?:\.\d+)?", specification):
+            if not unit:
+                unit = specification.split()[0]
+            specification = ""
+
         items.append(
             {
                 "product_line": product_line,
@@ -421,6 +592,16 @@ def _extract_invoice_items(text: str) -> list[Dict[str, Optional[str]]]:
         first = collecting[0]
         suffix = "".join(collecting[1:]) if len(collecting) > 1 else ""
         _parse_item_text(first, is_multiline=(len(collecting) > 1), suffix_text=suffix)
+
+    # Discount rows often repeat the same item across wrapped lines but lose part of
+    # the name/spec split. Reuse the previous item's name/spec for negative rows.
+    for i in range(1, len(items)):
+        amount_v = _to_float(items[i].get("amount"))
+        tax_v = _to_float(items[i].get("tax"))
+        if amount_v < 0 or tax_v < 0:
+            prev = items[i - 1]
+            items[i]["product_line"] = prev.get("product_line")
+            items[i]["specification"] = prev.get("specification")
 
     return items
 
