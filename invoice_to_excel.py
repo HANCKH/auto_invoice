@@ -224,6 +224,11 @@ def _extract_invoice_items(text: str) -> list[Dict[str, Optional[str]]]:
         r"^(?P<left>.+?)\s+(?P<amount>-\d+(?:\.\d+)?)\s+"
         r"(?P<rate>\d+(?:\.\d+)?%)\s+(?P<tax>-\d+(?:\.\d+)?)$"
     )
+    # Some invoices expose only "<name> <amount> <rate> <tax>" in item line.
+    pat_amount_rate_tax = re.compile(
+        r"^(?P<left>.+?)\s+(?P<amount>-?\d+(?:\.\d+)?)\s+"
+        r"(?P<rate>\d+(?:\.\d+)?%)\s+(?P<tax>-?\d+(?:\.\d+)?)$"
+    )
     # No explicit unit in extracted text: "<left> <qty> <unit_price> <amount> <rate> <tax>"
     pat_no_unit = re.compile(
         r"^(?P<left>.+?)\s+(?P<qty>\d+(?:\.\d+)?)\s+"
@@ -270,6 +275,25 @@ def _extract_invoice_items(text: str) -> list[Dict[str, Optional[str]]]:
             kept.append(tk)
         return "".join(kept)
 
+    def _split_name_spec(left_text: str, suffix_text: str = "") -> tuple[str, str]:
+        """
+        Split invoice item left-part into:
+        - 项目名称(product_line)
+        - 规格型号(specification)
+        """
+        suffix = _clean_suffix_text(suffix_text)
+        merged = re.sub(r"\s+", " ", f"{left_text} {suffix}".strip())
+        if not merged:
+            return "", ""
+
+        parts = merged.split()
+        if len(parts) == 1:
+            return parts[0], ""
+
+        product_line = parts[0]
+        specification = " ".join(parts[1:]).strip()
+        return product_line, specification
+
     def _parse_item_text(raw_item: str, is_multiline: bool, suffix_text: str = "") -> None:
         line = re.sub(r"\s+", " ", raw_item).strip()
         if not line:
@@ -301,61 +325,63 @@ def _extract_invoice_items(text: str) -> list[Dict[str, Optional[str]]]:
                     amount = md.group("amount")
                     tax = md.group("tax")
                 else:
-                    mn = pat_no_unit.match(line) or pat_no_unit_any.search(line)
-                    if mn:
-                        left = mn.group("left").strip()
-                        qty = mn.group("qty")
-                        amount = mn.group("amount")
-                        tax = mn.group("tax")
+                    mar = pat_amount_rate_tax.match(line)
+                    if mar:
+                        left = mar.group("left").strip()
+                        amount = mar.group("amount")
+                        tax = mar.group("tax")
                     else:
-                        mc = pat_concat_qty_price.match(line)
-                        if mc:
-                            left = mc.group("left").strip()
-                            amount = mc.group("amount")
-                            tax = mc.group("tax")
-                            qprice = mc.group("qprice")
-                            # Split concatenated "<qty><unit_price>" by best fit to amount.
-                            best_qty = "1"
-                            try:
-                                amount_f = float(amount)
-                                cand = []
-                                for k in (1, 2):
-                                    if len(qprice) <= k:
-                                        continue
-                                    q_s = qprice[:k]
-                                    up_s = qprice[k:]
-                                    if not q_s.isdigit():
-                                        continue
-                                    q_i = int(q_s)
-                                    if q_i <= 0:
-                                        continue
-                                    try:
-                                        up_f = float(up_s)
-                                    except Exception:
-                                        continue
-                                    if up_f <= 0:
-                                        continue
-                                    diff = abs(q_i * up_f - amount_f)
-                                    cand.append((diff, q_i))
-                                if cand:
-                                    cand.sort(key=lambda x: x[0])
-                                    best_qty = str(cand[0][1])
-                            except Exception:
+                        mn = pat_no_unit.match(line) or pat_no_unit_any.search(line)
+                        if mn:
+                            left = mn.group("left").strip()
+                            qty = mn.group("qty")
+                            amount = mn.group("amount")
+                            tax = mn.group("tax")
+                        else:
+                            mc = pat_concat_qty_price.match(line)
+                            if mc:
+                                left = mc.group("left").strip()
+                                amount = mc.group("amount")
+                                tax = mc.group("tax")
+                                qprice = mc.group("qprice")
+                                # Split concatenated "<qty><unit_price>" by best fit to amount.
                                 best_qty = "1"
-                            qty = best_qty
+                                try:
+                                    amount_f = float(amount)
+                                    cand = []
+                                    for k in (1, 2):
+                                        if len(qprice) <= k:
+                                            continue
+                                        q_s = qprice[:k]
+                                        up_s = qprice[k:]
+                                        if not q_s.isdigit():
+                                            continue
+                                        q_i = int(q_s)
+                                        if q_i <= 0:
+                                            continue
+                                        try:
+                                            up_f = float(up_s)
+                                        except Exception:
+                                            continue
+                                        if up_f <= 0:
+                                            continue
+                                        diff = abs(q_i * up_f - amount_f)
+                                        cand.append((diff, q_i))
+                                    if cand:
+                                        cand.sort(key=lambda x: x[0])
+                                        best_qty = str(cand[0][1])
+                                except Exception:
+                                    best_qty = "1"
+                                qty = best_qty
 
         parts = left.split()
         if not parts:
             return
 
-        if is_multiline:
-            # For wrapped item names, keep full merged name in 商品名称.
-            merged_name = f"{left}{_clean_suffix_text(suffix_text)}"
-            product_line = re.sub(r"\s+", "", merged_name)
-            specification = ""
-        else:
-            product_line = parts[0]
-            specification = " ".join(parts[1:]).strip() if len(parts) > 1 else ""
+        product_line, specification = _split_name_spec(
+            left_text=left,
+            suffix_text=suffix_text if is_multiline else "",
+        )
 
         items.append(
             {
