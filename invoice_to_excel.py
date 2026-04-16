@@ -576,22 +576,85 @@ def extract_invoice_data(pdf_path: str) -> Dict[str, Optional[str]]:
 
 
 def brand_from_vendor(vendor: str) -> str:
-    """Generate a short brand code from vendor name."""
-    if not vendor:
+    """Generate brand text by stripping leading admin regions and company suffixes."""
+    name = re.sub(r"\s+", "", vendor or "")
+    if not name:
+        return ""
+
+    admin_prefix = re.compile(
+        r"^(?:中国)?[\u4e00-\u9fa5]{2,14}?"
+        r"(?:特别行政区|壮族自治区|回族自治区|维吾尔自治区|自治区|自治州|自治县|自治旗|新区|省|市|区|县|旗|镇|乡|街道)"
+    )
+    for _ in range(8):
+        stripped = admin_prefix.sub("", name, count=1)
+        if stripped == name:
+            break
+        name = stripped
+
+    for municipality in ("北京", "上海", "天津", "重庆"):
+        if name.startswith(municipality) and len(name) > len(municipality):
+            name = name[len(municipality) :]
+            break
+
+    suffixes = [
+        "集团股份有限公司",
+        "股份有限公司",
+        "有限责任公司",
+        "集团有限公司",
+        "有限公司",
+        "（个体工商户）",
+        "(个体工商户)",
+        "销售中心",
+        "经营部",
+        "工作室",
+        "事务所",
+        "制品厂",
+        "工厂",
+        "商行",
+        "中心",
+        "公司",
+        "厂",
+        "店",
+    ]
+    changed = True
+    while changed and name:
+        changed = False
+        for suffix in suffixes:
+            if name.endswith(suffix) and len(name) > len(suffix):
+                name = name[: -len(suffix)]
+                changed = True
+                break
+
+    return name or re.sub(r"\s+", "", vendor or "")
+
+
+def _unit_price(data: Dict[str, Optional[str]]) -> Optional[float]:
+    amount_raw = data.get("amount")
+    quantity_raw = data.get("quantity")
+    if amount_raw in (None, "") or quantity_raw in (None, ""):
+        return None
+    quantity = _to_float(quantity_raw)
+    if quantity <= 0:
+        return None
+    return round(_to_float(amount_raw) / quantity, 6)
+
+
+def _item_code(data: Dict[str, Optional[str]]) -> str:
+    brand = brand_from_vendor(data.get("vendor") or "")
+    if not brand:
         return ""
     try:
         import pypinyin  # type: ignore
 
-        initials = pypinyin.pinyin(vendor, style=pypinyin.Style.FIRST_LETTER)
-        letters = [ch for group in initials for ch in group if ch.isalpha()]
-        if letters:
-            return "".join(letters[:2]).lower()
+        initials = pypinyin.pinyin(brand, style=pypinyin.Style.FIRST_LETTER)
+        code = "".join(ch for group in initials for ch in group if ch.isalnum()).upper()
     except Exception:
-        pass
+        code = "".join(ch for ch in brand if ch.isalnum()).upper()
 
-    # fallback
-    letters = [c for c in vendor if c.isalpha()]
-    return "".join(letters[:2]).lower() if letters else vendor[:2].lower()
+    if not code:
+        code = brand.upper()
+    seq = _to_int(data.get("item_index") or "1")
+    return f"{code}-{seq}"
 
 
 def _header_norm(header: Optional[str]) -> str:
@@ -618,7 +681,7 @@ def _build_row_by_headers(ws: openpyxl.worksheet.worksheet.Worksheet, data: Dict
         elif "CAS号" in h:
             v = ""
         elif "规格" in h:
-            v = data.get("specification") or ""
+            v = data.get("specification") or "无"
         elif "数量" in h:
             v = _to_int(data.get("quantity"))
         elif "包装单位" in h:
@@ -628,11 +691,11 @@ def _build_row_by_headers(ws: openpyxl.worksheet.worksheet.Worksheet, data: Dict
         elif "税额" in h:
             v = _to_float(data.get("tax"))
         elif "单价" in h:
-            v = None
+            v = _unit_price(data)
         elif "品牌" in h:
             v = brand_from_vendor(data.get("vendor") or "")
         elif "货号" in h:
-            v = 1
+            v = _item_code(data)
         elif "容量单位" in h:
             v = ""
         elif "容量数字" in h or h == "容量":
@@ -672,7 +735,9 @@ def write_vendor_excel(template_path: str, output_path: str, rows: list[Dict[str
     template_row = 2
 
     for idx, data in enumerate(rows, start=2):
-        row_map = _build_row_by_headers(ws, data)
+        row_data = dict(data)
+        row_data["item_index"] = str(idx - 1)
+        row_map = _build_row_by_headers(ws, row_data)
         for col_index in range(1, ws.max_column + 1):
             target = ws.cell(row=idx, column=col_index)
             target.value = row_map.get(col_index, "")
